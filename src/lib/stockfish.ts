@@ -12,6 +12,7 @@ export class StockfishEngine {
   private latestEval = 0
   private latestDepth = 0
   private isTurn = false
+  private blackToMove = false
 
   async init() {
     return new Promise<void>((resolve, reject) => {
@@ -62,7 +63,10 @@ export class StockfishEngine {
       const parts = line.split(' ')
       const bestMove = parts[1] || '0000'
       if (this.currentResolve) {
-        this.currentResolve({ bestMove, eval: this.latestEval, depth: this.latestDepth })
+        // Stockfish reports eval from side-to-move's perspective.
+        // Normalize to always be from white's perspective.
+        const normalizedEval = this.blackToMove ? -this.latestEval : this.latestEval
+        this.currentResolve({ bestMove, eval: normalizedEval, depth: this.latestDepth })
         this.currentResolve = null
         this.isTurn = false
         this.processQueue()
@@ -82,6 +86,7 @@ export class StockfishEngine {
       this.currentResolve = resolve
       this.latestEval = 0
       this.latestDepth = 0
+      this.blackToMove = fen.split(' ')[1] === 'b'
       this.worker!.postMessage('stop')
       this.worker!.postMessage(`setoption name Skill Level value ${skillLevel}`)
       this.worker!.postMessage(`position fen ${fen}`)

@@ -6,24 +6,25 @@ export function buildChessCoachPrompt(context: {
   bestMove: string
   playerColor: 'white' | 'black'
 }): string {
-  const evalDiff = context.evalAfter - context.evalBefore
-  // If player is black, a more negative eval is better for them
-  const loss = context.playerColor === 'white'
+  const sign = context.playerColor === 'white' ? 1 : -1
+  const playerEvalBefore = (context.evalBefore * sign / 100).toFixed(1)
+  const playerEvalAfter = (context.evalAfter * sign / 100).toFixed(1)
+  const cpLoss = context.playerColor === 'white'
     ? context.evalBefore - context.evalAfter
     : context.evalAfter - context.evalBefore
+  const isBestMove = context.playerMove === context.bestMove || cpLoss <= 10
 
-  const quality = loss > 200 ? 'blunder' : loss > 100 ? 'mistake' : loss > 50 ? 'inaccuracy' : 'good'
+  return `Player (${context.playerColor}) played **${context.playerMove}**.
 
-  return `You are a friendly chess coach. The player (${context.playerColor}) just played ${context.playerMove}.
+Position before move (FEN): ${context.fen}
+Player's eval before: ${playerEvalBefore} (positive = player is better)
+Player's eval after: ${playerEvalAfter}
+Centipawn loss: ${cpLoss}cp${context.bestMove && !isBestMove ? `\nStockfish preferred: ${context.bestMove}` : ''}
 
-Position (FEN): ${context.fen}
-Evaluation before move: ${(context.evalBefore / 100).toFixed(1)} pawns (from white's perspective)
-Evaluation after move: ${(context.evalAfter / 100).toFixed(1)} pawns (from white's perspective)
-Eval change: ${(evalDiff / 100).toFixed(1)} pawns
-Move quality: ${quality}
-Stockfish best move was: ${context.bestMove}
-
-Give a 2-3 sentence coaching comment. Explain simply why this move was ${quality}${quality !== 'good' ? ` and what ${context.bestMove} would have achieved instead` : ''}. Be encouraging. No bullet points.`
+${isBestMove
+    ? `This was the engine's top choice. Briefly explain (2 sentences) what makes this move strong in the position — what does it achieve strategically or tactically?`
+    : `The player lost ~${cpLoss}cp. In 2-3 sentences: (1) What was the idea behind ${context.playerMove}? (2) Why is ${context.bestMove} better — what concrete threat or advantage does it create? Be specific about the position, not generic.`
+}`
 }
 
-export const SYSTEM_PROMPT = `You are a concise, encouraging chess coach. Give plain English explanations based only on the engine data provided. Never try to calculate yourself.`
+export const SYSTEM_PROMPT = `You are a concise chess coach for improving players. Explain moves in plain English using positional and tactical concepts (pins, forks, open files, weak squares, development, king safety, etc). Be specific to the actual position — never give generic advice. Keep it under 3 sentences. Be encouraging but honest.`
