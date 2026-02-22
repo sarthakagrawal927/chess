@@ -5,6 +5,8 @@ export interface MoveEntry {
   quality: MoveQuality
   evalBefore: number
   evalAfter: number
+  bestMove?: string
+  prevFen?: string
 }
 
 const QUALITY_STYLES: Record<MoveQuality, { dot: string; label: string; bg: string }> = {
@@ -21,10 +23,16 @@ interface MoveChipProps {
   color: 'white' | 'black'
 }
 
+function formatEvalShort(cp: number): string {
+  if (Math.abs(cp) >= 10000) return cp > 0 ? 'M' : '-M'
+  const pawns = cp / 100
+  return pawns >= 0 ? `+${pawns.toFixed(1)}` : pawns.toFixed(1)
+}
+
 function MoveChip({ move, moveNumber, color }: MoveChipProps) {
   const style = QUALITY_STYLES[move.quality]
   return (
-    <div className={`flex items-center gap-1.5 px-2 py-1 rounded ${style.bg}`}>
+    <div className={`flex items-center gap-1 px-2 py-1 rounded ${style.bg}`}>
       {moveNumber !== undefined && color === 'white' && (
         <span className="text-gray-500 text-xs w-5">{moveNumber}.</span>
       )}
@@ -33,6 +41,7 @@ function MoveChip({ move, moveNumber, color }: MoveChipProps) {
       )}
       <span className="text-gray-100 text-sm font-mono">{move.san}</span>
       <span className={`w-2 h-2 rounded-full flex-shrink-0 ${style.dot}`} title={style.label} />
+      <span className="text-gray-500 text-[10px] font-mono ml-auto">{formatEvalShort(move.evalAfter)}</span>
     </div>
   )
 }

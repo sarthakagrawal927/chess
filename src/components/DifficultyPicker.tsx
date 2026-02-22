@@ -9,7 +9,7 @@ export interface DifficultyConfig {
 export const DIFFICULTY_CONFIGS: Record<DifficultyLevel, DifficultyConfig> = {
   0: { skillLevel: 0, moveTime: 50, label: 'Beginner' },
   1: { skillLevel: 4, moveTime: 100, label: 'Easy' },
-  2: { skillLevel: 8, moveTime: 300, label: 'Intermediate' },
+  2: { skillLevel: 8, moveTime: 300, label: 'Medium' },
   3: { skillLevel: 13, moveTime: 600, label: 'Hard' },
   4: { skillLevel: 18, moveTime: 1200, label: 'Expert' },
   5: { skillLevel: 20, moveTime: 2000, label: 'Max' },
