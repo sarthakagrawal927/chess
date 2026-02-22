@@ -38,6 +38,15 @@ function uciToSan(game: Chess, uci: string): string {
   }
 }
 
+// Clone a chess.js game preserving full move history
+// (new Chess(fen) loses history — this uses PGN instead)
+function cloneGame(game: Chess): Chess {
+  const clone = new Chess()
+  const pgn = game.pgn()
+  if (pgn) clone.loadPgn(pgn)
+  return clone
+}
+
 const TIME_CONTROLS = [
   { label: '∞', value: 0 },
   { label: '1m', value: 1 },
@@ -47,26 +56,52 @@ const TIME_CONTROLS = [
   { label: '15m', value: 15 },
 ]
 
+const GAME_STATE_KEY = 'chess-coach-game'
+
+function loadGameState() {
+  try {
+    const raw = localStorage.getItem(GAME_STATE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as {
+      pgn: string
+      orientation: 'white' | 'black'
+      difficulty: DifficultyLevel
+      moveHistory: MoveEntry[]
+      timeControl: number
+      timeLeft: { white: number; black: number }
+    }
+  } catch { return null }
+}
+
 interface ChessGameProps {
   aiConfig: AIConfig
 }
 
 export function ChessGame({ aiConfig }: ChessGameProps) {
-  const [game, setGame] = useState(() => new Chess())
-  const [fen, setFen] = useState(() => new Chess().fen())
-  const [orientation, setOrientation] = useState<'white' | 'black'>('white')
-  const [difficulty, setDifficulty] = useState<DifficultyLevel>(2)
+  const saved = useRef(loadGameState()).current
+
+  const [game, setGame] = useState(() => {
+    if (saved?.pgn) {
+      const g = new Chess()
+      g.loadPgn(saved.pgn)
+      return g
+    }
+    return new Chess()
+  })
+  const [fen, setFen] = useState(() => game.fen())
+  const [orientation, setOrientation] = useState<'white' | 'black'>(saved?.orientation ?? 'white')
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>(saved?.difficulty ?? 2)
   const [evalScore, setEvalScore] = useState(0)
   const [bestMoveArrow, setBestMoveArrow] = useState<BestMoveArrow | null>(null)
   const [gameOver, setGameOver] = useState<string | null>(null)
   const [isComputerThinking, setIsComputerThinking] = useState(false)
-  const [moveHistory, setMoveHistory] = useState<MoveEntry[]>([])
+  const [moveHistory, setMoveHistory] = useState<MoveEntry[]>(saved?.moveHistory ?? [])
   const [lastMoveQuality, setLastMoveQuality] = useState<MoveQuality | null>(null)
   const [lastMoveSan, setLastMoveSan] = useState<string | null>(null)
   const [isFetchingHint, setIsFetchingHint] = useState(false)
   const [boardWidth, setBoardWidth] = useState(480)
-  const [timeControl, setTimeControl] = useState(0) // 0 = unlimited, else minutes
-  const [timeLeft, setTimeLeft] = useState({ white: 0, black: 0 })
+  const [timeControl, setTimeControl] = useState(saved?.timeControl ?? 0)
+  const [timeLeft, setTimeLeft] = useState(saved?.timeLeft ?? { white: 0, black: 0 })
 
   const engineRef = useRef<StockfishEngine | null>(null)
   const engineReadyRef = useRef(false)
@@ -77,7 +112,20 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
   const orientationRef = useRef(orientation)
   orientationRef.current = orientation
   const evalDebounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const computerMoveTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
   const centerColRef = useRef<HTMLDivElement>(null)
+
+  // Persist game state to localStorage
+  useEffect(() => {
+    localStorage.setItem(GAME_STATE_KEY, JSON.stringify({
+      pgn: game.pgn(),
+      orientation,
+      difficulty,
+      moveHistory,
+      timeControl,
+      timeLeft,
+    }))
+  }, [fen, orientation, difficulty, moveHistory, timeControl, timeLeft])
 
   // Debounced eval setter
   const setEvalSmooth = useCallback((val: number) => {
@@ -183,7 +231,7 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
       const to = uci.slice(2, 4)
       const promotion = uci.length > 4 ? uci[4] : undefined
 
-      const newGame = new Chess(currentGame.fen())
+      const newGame = cloneGame(currentGame)
       const move = newGame.move({ from, to, promotion: promotion as 'q' | 'r' | 'b' | 'n' | undefined })
 
       if (move) {
@@ -207,13 +255,19 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
     }
   }, [difficulty])
 
-  const analyzePlayerMove = useCallback(async (
+  // After player moves: eval + quality + trigger computer — NO AI coach call
+  const afterPlayerMove = useCallback(async (
     movedGame: Chess,
     moveSan: string,
     prevFen: string,
-    currentAIConfig: AIConfig,
   ) => {
-    if (!engineRef.current) return
+    if (!engineRef.current) {
+      // Still need to trigger computer even if engine eval fails
+      if (!movedGame.isGameOver()) {
+        computerMoveTimeoutRef.current = setTimeout(() => makeComputerMove(movedGame), 300)
+      }
+      return
+    }
 
     const engine = engineRef.current
 
@@ -232,7 +286,6 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
     try {
       const postResult = await engine.getEval(movedGame.fen())
       evalAfter = postResult.eval
-      setEvalSmooth(evalAfter)
     } catch { }
 
     const color = orientationRef.current
@@ -247,28 +300,18 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
       quality,
       evalBefore,
       evalAfter,
+      bestMove: bestMoveSan || bestMoveUci,
+      prevFen,
     }
 
     setMoveHistory(prev => [...prev, moveEntry])
     setLastMoveQuality(quality)
     setLastMoveSan(moveSan)
 
-    evaluate(
-      {
-        fen: prevFen,
-        playerMove: moveSan,
-        evalBefore,
-        evalAfter,
-        bestMove: bestMoveSan || bestMoveUci,
-        playerColor: color,
-      },
-      currentAIConfig,
-    )
-
     if (!movedGame.isGameOver()) {
-      setTimeout(() => makeComputerMove(movedGame), 300)
+      computerMoveTimeoutRef.current = setTimeout(() => makeComputerMove(movedGame), 300)
     }
-  }, [evaluate, makeComputerMove])
+  }, [makeComputerMove])
 
   const onPieceDrop = useCallback(({ piece, sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
     if (!engineRef.current || !engineReadyRef.current) return false
@@ -286,7 +329,7 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
       (targetSquare[1] === '8' || targetSquare[1] === '1')
     const promotion = isPromoting ? 'q' : undefined
 
-    const newGame = new Chess(currentFen)
+    const newGame = cloneGame(gameRef.current)
     let move
     try {
       move = newGame.move({
@@ -309,10 +352,10 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
       setGameOver('Draw!')
     }
 
-    analyzePlayerMove(newGame, move.san, currentFen, aiConfig)
+    afterPlayerMove(newGame, move.san, currentFen)
 
     return true
-  }, [isComputerThinking, isPlayerTurn, analyzePlayerMove, aiConfig])
+  }, [isComputerThinking, isPlayerTurn, afterPlayerMove])
 
   const handleBestMoveHint = useCallback(async () => {
     if (!engineRef.current || !engineReadyRef.current) return
@@ -334,6 +377,24 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
       setIsFetchingHint(false)
     }
   }, [game, isComputerThinking, isFetchingHint, isPlayerTurn])
+
+  const handleAnalyze = useCallback(() => {
+    if (moveHistory.length === 0) return
+    const lastMove = moveHistory[moveHistory.length - 1]
+    if (!lastMove.prevFen) return
+
+    evaluate(
+      {
+        fen: lastMove.prevFen,
+        playerMove: lastMove.san,
+        evalBefore: lastMove.evalBefore,
+        evalAfter: lastMove.evalAfter,
+        bestMove: lastMove.bestMove || '',
+        playerColor: orientation,
+      },
+      aiConfig,
+    )
+  }, [moveHistory, orientation, aiConfig, evaluate])
 
   const handleNewGame = useCallback(() => {
     const newGame = new Chess()
@@ -362,15 +423,18 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
 
   const handleUndo = useCallback(() => {
     if (isComputerThinking) return
-    const history = game.history({ verbose: true })
-    if (history.length === 0) return
+    const moves = game.history() // plain SAN strings like ['e4', 'e5', ...]
+    if (moves.length === 0) return
+
+    // Cancel any pending computer move to prevent race condition
+    clearTimeout(computerMoveTimeoutRef.current)
 
     const movesToUndo = isPlayerTurn() ? 2 : 1
-    const movesToKeep = Math.max(0, history.length - movesToUndo)
+    const keepCount = Math.max(0, moves.length - movesToUndo)
 
     const newGame = new Chess()
-    for (let i = 0; i < movesToKeep; i++) {
-      newGame.move(history[i])
+    for (let i = 0; i < keepCount; i++) {
+      newGame.move(moves[i])
     }
 
     setGame(newGame)
@@ -425,18 +489,19 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
           </div>
         )}
 
-        {/* Game status */}
-        {gameOver && (
-          <div className="bg-yellow-900/60 border border-yellow-600 text-yellow-200 rounded-lg px-4 py-2 text-sm font-semibold text-center" style={{ width: boardWidth }}>
-            {gameOver}
-          </div>
-        )}
-        {isComputerThinking && !gameOver && (
-          <div className="flex items-center gap-2 text-gray-400 text-sm">
-            <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-            Computer is thinking...
-          </div>
-        )}
+        {/* Status area — fixed height to prevent layout shift */}
+        <div className="h-8 flex items-center justify-center" style={{ width: boardWidth }}>
+          {gameOver ? (
+            <div className="bg-yellow-900/60 border border-yellow-600 text-yellow-200 rounded-lg px-4 py-1 text-sm font-semibold">
+              {gameOver}
+            </div>
+          ) : isComputerThinking ? (
+            <div className="flex items-center gap-2 text-gray-400 text-sm">
+              <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              Computer is thinking...
+            </div>
+          ) : null}
+        </div>
 
         {/* Chess board */}
         <div style={{ width: boardWidth, height: boardWidth }}>
@@ -556,6 +621,8 @@ export function ChessGame({ aiConfig }: ChessGameProps) {
             error={coachError}
             lastMoveQuality={lastMoveQuality}
             lastMoveSan={lastMoveSan}
+            onAnalyze={handleAnalyze}
+            canAnalyze={moveHistory.length > 0}
           />
         </div>
 

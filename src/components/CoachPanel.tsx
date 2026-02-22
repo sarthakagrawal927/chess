@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, MessageSquare } from 'lucide-react'
 import type { MoveQuality } from './MoveList'
 
 const QUALITY_BADGE: Record<MoveQuality, { label: string; className: string }> = {
@@ -15,14 +15,26 @@ interface CoachPanelProps {
   error: string | null
   lastMoveQuality: MoveQuality | null
   lastMoveSan: string | null
+  onAnalyze: () => void
+  canAnalyze: boolean
 }
 
-export function CoachPanel({ explanation, isStreaming, error, lastMoveQuality, lastMoveSan }: CoachPanelProps) {
+export function CoachPanel({ explanation, isStreaming, error, lastMoveQuality, lastMoveSan, onAnalyze, canAnalyze }: CoachPanelProps) {
   const badge = lastMoveQuality ? QUALITY_BADGE[lastMoveQuality] : null
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold">AI Coach</div>
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold">AI Coach</div>
+        <button
+          onClick={onAnalyze}
+          disabled={!canAnalyze || isStreaming}
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
+        >
+          <MessageSquare className="w-3 h-3" />
+          Analyze
+        </button>
+      </div>
 
       {badge && lastMoveSan && (
         <div className="flex items-center gap-2">
@@ -43,7 +55,7 @@ export function CoachPanel({ explanation, isStreaming, error, lastMoveQuality, l
 
         {!isStreaming && !explanation && !error && (
           <span className="text-gray-500 italic">
-            Make a move to get coaching from your AI coach.
+            Click "Analyze" after a move to get AI coaching.
           </span>
         )}
 
