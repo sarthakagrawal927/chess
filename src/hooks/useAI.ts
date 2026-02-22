@@ -42,46 +42,53 @@ export function saveAIConfig(config: AIConfig) {
   localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config))
 }
 
-const OPENAI_COMPAT_URLS: Partial<Record<AIProvider, string>> = {
-  openai: 'https://api.openai.com/v1/chat/completions',
-  deepseek: 'https://api.deepseek.com/chat/completions',
-}
-
 interface AIMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
-async function streamOpenAICompat(
+// SSE parsers per provider — the serverless proxy streams the upstream response as-is
+const CHUNK_PARSERS: Record<string, (line: string) => string | null> = {
+  anthropic: (line) => {
+    const json = JSON.parse(line.slice(6))
+    return json.type === 'content_block_delta' ? json.delta?.text ?? null : null
+  },
+  google: (line) => {
+    const json = JSON.parse(line.slice(6))
+    return json.candidates?.[0]?.content?.parts?.[0]?.text ?? null
+  },
+  _openai: (line) => {
+    const json = JSON.parse(line.slice(6))
+    return json.choices?.[0]?.delta?.content ?? null
+  },
+}
+
+async function streamCloudProxy(
   config: AIConfig,
   messages: AIMessage[],
   systemContext: string,
   onChunk: (text: string) => void,
   signal: AbortSignal
 ) {
-  const url = OPENAI_COMPAT_URLS[config.provider] || OPENAI_COMPAT_URLS.openai!
-  const res = await fetch(url, {
+  const res = await fetch('/api/coach', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      provider: config.provider,
       model: config.model,
-      stream: true,
-      messages: [
-        { role: 'system', content: systemContext },
-        ...messages,
-      ],
+      apiKey: config.apiKey,
+      messages,
+      systemPrompt: systemContext,
     }),
     signal,
   })
 
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`${config.provider} API error: ${res.status} - ${err}`)
+    throw new Error(`Coach API error: ${res.status} - ${err}`)
   }
 
+  const parse = CHUNK_PARSERS[config.provider] || CHUNK_PARSERS._openai
   const reader = res.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -95,113 +102,7 @@ async function streamOpenAICompat(
     for (const line of lines) {
       if (line.startsWith('data: ') && line !== 'data: [DONE]') {
         try {
-          const json = JSON.parse(line.slice(6))
-          const content = json.choices?.[0]?.delta?.content
-          if (content) onChunk(content)
-        } catch { }
-      }
-    }
-  }
-}
-
-async function streamAnthropic(
-  config: AIConfig,
-  messages: AIMessage[],
-  systemContext: string,
-  onChunk: (text: string) => void,
-  signal: AbortSignal
-) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 512,
-      stream: true,
-      system: systemContext,
-      messages,
-    }),
-    signal,
-  })
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Anthropic API error: ${res.status} - ${err}`)
-  }
-
-  const reader = res.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const json = JSON.parse(line.slice(6))
-          if (json.type === 'content_block_delta' && json.delta?.text) {
-            onChunk(json.delta.text)
-          }
-        } catch { }
-      }
-    }
-  }
-}
-
-async function streamGoogle(
-  config: AIConfig,
-  messages: AIMessage[],
-  systemContext: string,
-  onChunk: (text: string) => void,
-  signal: AbortSignal
-) {
-  const contents = messages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }))
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:streamGenerateContent?alt=sse&key=${config.apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemContext }] },
-        contents,
-      }),
-      signal,
-    }
-  )
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Google API error: ${res.status} - ${err}`)
-  }
-
-  const reader = res.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const json = JSON.parse(line.slice(6))
-          const text = json.candidates?.[0]?.content?.parts?.[0]?.text
+          const text = parse(line)
           if (text) onChunk(text)
         } catch { }
       }
@@ -288,6 +189,12 @@ export function useChessCoach() {
     setIsStreaming(true)
     setError(null)
 
+    if (!LOCAL_PROVIDERS.has(config.provider) && !config.apiKey) {
+      setError('No API key configured. Open AI Config (gear icon) to add your key.')
+      setIsStreaming(false)
+      return
+    }
+
     const prompt = buildChessCoachPrompt(context)
     const messages: AIMessage[] = [{ role: 'user', content: prompt }]
     const systemContext = SYSTEM_PROMPT
@@ -299,11 +206,7 @@ export function useChessCoach() {
     try {
       const streamFn = LOCAL_PROVIDERS.has(config.provider)
         ? streamLocalCLI
-        : config.provider === 'anthropic'
-          ? streamAnthropic
-          : config.provider === 'google'
-            ? streamGoogle
-            : streamOpenAICompat
+        : streamCloudProxy
 
       await streamFn(config, messages, systemContext, onChunk, abortRef.current.signal)
     } catch (e: unknown) {

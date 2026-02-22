@@ -108,7 +108,7 @@ export function AIConfigModal({ onClose, onSave }: AIConfigModalProps) {
                   {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-xs text-gray-500">Stored in localStorage only, never sent to our servers.</p>
+              <p className="text-xs text-gray-500">Your key is sent through our server proxy — never directly to the provider from your browser.</p>
             </div>
           )}
 
