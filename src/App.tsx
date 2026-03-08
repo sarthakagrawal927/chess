@@ -4,6 +4,7 @@ import { ChessGame } from './components/ChessGame'
 import { AIConfigModal } from './components/AIConfig'
 import { loadAIConfig, type AIConfig } from './hooks/useAI'
 import { saasmaker } from './lib/saasmaker'
+import { SaaSMakerFeedback } from './components/saasmaker-feedback'
 
 export default function App() {
   const [showAIConfig, setShowAIConfig] = useState(false)
@@ -54,6 +55,7 @@ export default function App() {
           }}
         />
       )}
+      <SaaSMakerFeedback />
     </div>
   )
 }
